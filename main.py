@@ -1,60 +1,60 @@
 # based on https://github.com/milindmalshe/Fully-Connected-Neural-Network-PyTorch/blob/master/FCN_MNIST_Classification_PyTorch.py
+
 import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
+import numpy as np
+import random # For setting Python's random seed
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import numpy as np  # For plotting misclassified images
+
+
+# --- Seeding Function ---
+def set_seed(seed):
+    """Sets the seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        # The following two lines are crucial for reproducibility with CUDA
+        # but can impact performance. For this task, reproducibility is key.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    print(f"Seed set to: {seed}")
 
 # Setup device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
-# Hyperparameters
-input_size = 784
+# Hyperparameters (same as Task 1)
+input_size = 784  # 28x28
 hidden_size = 500
 num_classes = 10
-num_epochs = 5
+num_epochs = 5 # As per original, can be increased for better convergence
 batch_size = 100
 learning_rate = 0.001
-num_misclassified_to_show = 10
 
-# MNIST dataset
+# --- MNIST dataset (loaded once) ---
+# Ensure transforms.ToTensor() is applied, which normalizes images to [0,1]
+transform_ops = transforms.Compose([
+    transforms.ToTensor()
+    # No other normalization like (mean, std) was in the original,
+    # so keeping it simple. Adding it might improve performance slightly.
+])
+
 train_dataset = torchvision.datasets.MNIST(root='./data/',
                                            train=True,
-                                           transform=transforms.ToTensor(),
+                                           transform=transform_ops,
                                            download=True)
 
 test_dataset = torchvision.datasets.MNIST(root='./data/',
                                           train=False,
-                                          transform=transforms.ToTensor())
+                                          transform=transform_ops)
 
-# Data loader
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
-                                           batch_size=batch_size,
-                                           shuffle=True)
-
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                          batch_size=batch_size,
-                                          shuffle=False)
-
-
-# --- Optional: Plot some training images (from original code) ---
-images_sample, labels_sample = next(iter(train_loader))
-fig_sample, axs_sample = plt.subplots(2, 5, figsize=(10, 4))
-fig_sample.suptitle('Sample MNIST Training Images')
-for ii in range(2):
-    for jj in range(5):
-        idx = 5 * ii + jj
-        axs_sample[ii, jj].imshow(images_sample[idx].squeeze(), cmap='gray')
-        axs_sample[ii, jj].set_title(f"Label: {labels_sample[idx].item()}")
-        axs_sample[ii, jj].axis('off')
-plt.tight_layout()
-plt.show()
-# --- End Optional Plot ---
-
-# Fully connected neural network
+# Fully connected neural network (same as Task 1)
 class NeuralNet(nn.Module):
     def __init__(self, input_size, hidden_size, num_classes):
         super(NeuralNet, self).__init__()
@@ -68,26 +68,23 @@ class NeuralNet(nn.Module):
         out = self.fc2(out)
         return out
 
+# Function to calculate loss and error (same as Task 1, slightly refined)
+def calculate_metrics(loader, model, criterion, device, is_train=False):
+    if is_train:
+        model.train() # Keep model in train mode if calculating training metrics during training phase
+    else:
+        model.eval()  # Set model to evaluation mode for test/validation
 
-model = NeuralNet(input_size, hidden_size, num_classes).to(device)
-
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-
-# Function to calculate loss and error
-def calculate_metrics(loader, model, criterion, device):
-    model.eval()  # Set model to evaluation mode
     total_loss = 0
     correct = 0
     total = 0
-    with torch.no_grad():
+    with torch.no_grad() if not is_train else torch.enable_grad(): # No grad for eval
         for images, labels in loader:
             images = images.reshape(-1, input_size).to(device)
             labels = labels.to(device)
             outputs = model(images)
             loss = criterion(outputs, labels)
-            total_loss += loss.item() * images.size(0)  # Accumulate weighted loss
+            total_loss += loss.item() * images.size(0) # Accumulate weighted loss
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
@@ -98,141 +95,120 @@ def calculate_metrics(loader, model, criterion, device):
     return avg_loss, error
 
 
-# Lists to store metrics for plotting
-train_losses_epoch = []
-train_errors_epoch = []
-test_errors_epoch = []
+# --- Main Experiment Loop for Multiple Seeds ---
+seed_numbers = [1992, 2006, 2009, 2011, 2015] # 5 seeds which represent the years Barca won the Champions League
+all_runs_test_errors_epoch = [] # To store [[epoch_errors_run1], [epoch_errors_run2], ...]
+final_test_errors_for_runs = [] # To store [final_error_run1, final_error_run2, ...]
 
-# Train the model
-total_step = len(train_loader)
-print(f"Starting training for {num_epochs} epochs...")
-for epoch in range(num_epochs):
-    model.train()  # Set model to training mode
-    running_batch_loss = 0.0
-    for i, (images, labels) in enumerate(train_loader):
-        images = images.reshape(-1, input_size).to(device)
-        labels = labels.to(device)
+for run_idx, current_seed in enumerate(seed_numbers):
+    print(f"\n--- Starting Run {run_idx + 1}/{len(seed_numbers)} with Seed: {current_seed} ---")
+    set_seed(current_seed)
 
-        # Forward pass
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        running_batch_loss += loss.item()
+    # --- Re-initialize Model and Optimizer for each run ---
+    model = NeuralNet(input_size, hidden_size, num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-        # Backward and optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    # --- Re-initialize DataLoaders to ensure shuffle is re-seeded if applicable ---
+    # The shuffle in train_loader is controlled by torch.manual_seed()
+    # A worker_init_fn would be needed for num_workers > 0 for full determinism,
+    # but for num_workers=0 (default), global seed is usually sufficient.
+    def seed_worker(worker_id): # Added for completeness if num_workers > 0
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
 
-        if (i + 1) % 200 == 0:  # Print training progress more frequently
-            print('Epoch [{}/{}], Step [{}/{}], Batch Loss: {:.4f}'
-                  .format(epoch + 1, num_epochs, i + 1, total_step, loss.item()))
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=True,
+                                               worker_init_fn=seed_worker if device.type != 'mps' else None, # MPS doesn't support worker_init_fn well
+                                               generator=torch.Generator().manual_seed(current_seed) if device.type != 'mps' else None) # For DataLoader shuffle
 
-    # Calculate metrics after each epoch
-    avg_epoch_train_loss_on_batches = running_batch_loss / total_step  # Avg loss from training batches
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
+                                              batch_size=batch_size,
+                                              shuffle=False) # No shuffle, so less critical but good practice
 
-    # For e_tr (train error) and comprehensive train loss, evaluate on the whole training set
-    epoch_train_loss, epoch_train_error = calculate_metrics(train_loader, model, criterion, device)
-    train_losses_epoch.append(epoch_train_loss)  # Using loss from full train set eval
-    train_errors_epoch.append(epoch_train_error)
+    # Lists to store metrics for the current run
+    current_run_train_errors_epoch = []
+    current_run_test_errors_epoch = []
 
-    # For e_te (test error)
-    _, epoch_test_error = calculate_metrics(test_loader, model, criterion, device)
-    test_errors_epoch.append(epoch_test_error)
+    print(f"Training model for {num_epochs} epochs with seed {current_seed}...")
+    total_step = len(train_loader)
+    for epoch in range(num_epochs):
+        model.train() # Set model to training mode
+        running_batch_loss = 0.0
+        for i, (images, labels) in enumerate(train_loader):
+            images = images.reshape(-1, input_size).to(device)
+            labels = labels.to(device)
 
-    print(f"Epoch [{epoch + 1}/{num_epochs}]: "
-          f"Train Loss (full eval): {epoch_train_loss:.4f}, Train Error (e_tr): {epoch_train_error:.4f}, "
-          f"Test Error (e_te): {epoch_test_error:.4f}")
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            running_batch_loss += loss.item()
 
-print("Training finished.")
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-# --- Final Evaluation and Reporting ---
-print("\n--- Final Model Evaluation ---")
-final_test_loss, final_test_error = calculate_metrics(test_loader, model, criterion, device)
-final_test_accuracy = 1 - final_test_error
+            if (i + 1) % 200 == 0:
+                print('Epoch [{}/{}], Step [{}/{}], Batch Loss: {:.4f}'
+                      .format(epoch + 1, num_epochs, i + 1, total_step, loss.item()))
 
-print(f'Final Test Accuracy on the 10000 test images: {final_test_accuracy * 100:.2f} %')
-print(f'Final Test Error (e_te) on the 10000 test images: {final_test_error:.4f}')
+        # Calculate metrics after each epoch
+        # For e_tr (train error), evaluate on the whole training set
+        # Pass is_train=False to ensure no_grad context if calculate_metrics uses it
+        _, epoch_train_error = calculate_metrics(train_loader, model, criterion, device, is_train=False)
+        current_run_train_errors_epoch.append(epoch_train_error)
 
-# --- Collect Misclassified Images ---
-misclassified_images_list = []
-misclassified_true_labels = []
-misclassified_pred_labels = []
+        # For e_te (test error)
+        _, epoch_test_error = calculate_metrics(test_loader, model, criterion, device, is_train=False)
+        current_run_test_errors_epoch.append(epoch_test_error)
 
-model.eval()  # Ensure model is in evaluation mode
-with torch.no_grad():
-    for images, labels in test_loader:
-        original_images_batch = images.clone()  # Keep original shape for plotting
-        images_reshaped = images.reshape(-1, input_size).to(device)
-        labels_dev = labels.to(device)
-        outputs = model(images_reshaped)
-        _, predicted = torch.max(outputs.data, 1)
+        print(f"Epoch [{epoch+1}/{num_epochs}] (Seed {current_seed}): "
+              f"Train Error (e_tr): {epoch_train_error:.4f}, "
+              f"Test Error (e_te): {epoch_test_error:.4f}")
 
-        for j in range(labels_dev.size(0)):
-            if predicted[j] != labels_dev[j]:
-                if len(misclassified_images_list) < num_misclassified_to_show:
-                    misclassified_images_list.append(original_images_batch[j].cpu())
-                    misclassified_true_labels.append(labels_dev[j].cpu().item())
-                    misclassified_pred_labels.append(predicted[j].cpu().item())
-            # else: # Optimization: stop collecting if we have enough
-            #     if len(misclassified_images_list) >= num_misclassified_to_show and \
-            #        all(len(lst) >= num_misclassified_to_show for lst in [misclassified_images_list, misclassified_true_labels, misclassified_pred_labels]):
-            #         break # break inner loop
-    # if len(misclassified_images_list) >= num_misclassified_to_show and \
-    #    all(len(lst) >= num_misclassified_to_show for lst in [misclassified_images_list, misclassified_true_labels, misclassified_pred_labels]):
-    #     break # break outer loop (data loader)
+    all_runs_test_errors_epoch.append(current_run_test_errors_epoch)
+    final_test_errors_for_runs.append(current_run_test_errors_epoch[-1]) # Last epoch's test error
+    print(f"Run {run_idx + 1} (Seed {current_seed}) Final Test Error: {current_run_test_errors_epoch[-1]:.4f}")
 
-# --- Plotting Section ---
+print("\n--- All Runs Completed ---")
 
-# 1. Plot Train and Test Error graphs
-plt.figure(figsize=(10, 5))
+# --- Plotting Test Errors from all runs ---
+plt.figure(figsize=(12, 7))
 epochs_range = range(1, num_epochs + 1)
-plt.plot(epochs_range, train_errors_epoch, label='Train Error (e_tr)', marker='o')
-plt.plot(epochs_range, test_errors_epoch, label='Test Error (e_te)', marker='x')
-plt.title('Train and Test Error vs. Epochs')
+for i, run_errors in enumerate(all_runs_test_errors_epoch):
+    plt.plot(epochs_range, run_errors, label=f'Run {i+1} (Seed {seed_numbers[i]})', marker='o', linestyle='-')
+
+plt.title('Test Error (e_te) vs. Epochs for Different Seeds')
 plt.xlabel('Epoch')
-plt.ylabel('Error Rate')
+plt.ylabel('Test Error Rate')
 plt.xticks(epochs_range)
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-# Optional: Plot Training Loss
-plt.figure(figsize=(10, 5))
-plt.plot(epochs_range, train_losses_epoch, label='Average Train Loss (full eval)', marker='s')
-plt.title('Average Training Loss (full eval) vs. Epochs')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.xticks(epochs_range)
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+# --- Calculate and Report Mean and Standard Deviation of Final Test Errors ---
+mean_final_test_error = np.mean(final_test_errors_for_runs)
+std_final_test_error = np.std(final_test_errors_for_runs)
+variance_final_test_error = np.var(final_test_errors_for_runs) # Variance is std^2
 
-# 2. Plot Misclassified Images
-if misclassified_images_list:
-    print(f"\n--- Plotting {len(misclassified_images_list)} Misclassified Images ---")
-    num_cols = 5
-    num_rows = (len(misclassified_images_list) + num_cols - 1) // num_cols  # Calculate rows needed
-    fig_mis, axs_mis = plt.subplots(num_rows, num_cols, figsize=(num_cols * 2.5, num_rows * 3))
-    axs_mis = axs_mis.flatten()  # Flatten in case of single row/col
+print("\n--- Statistics of Final Test Errors Across Runs ---")
+print(f"Final Test Errors for each run: {[f'{err:.4f}' for err in final_test_errors_for_runs]}")
+print(f"Mean Final Test Error: {mean_final_test_error:.4f}")
+print(f"Standard Deviation of Final Test Error: {std_final_test_error:.4f}")
+print(f"Variance of Final Test Error: {variance_final_test_error:.6f}") # More precision for variance
 
-    for i in range(len(misclassified_images_list)):
-        img = misclassified_images_list[i].squeeze()
-        true_label = misclassified_true_labels[i]
-        pred_label = misclassified_pred_labels[i]
-        axs_mis[i].imshow(img, cmap='gray')
-        axs_mis[i].set_title(f"True: {true_label}\nPred: {pred_label}")
-        axs_mis[i].axis('off')
-
-    # Turn off any unused subplots
-    for i in range(len(misclassified_images_list), len(axs_mis)):
-        axs_mis[i].axis('off')
-
-    plt.tight_layout()
-    plt.show()
+# --- Assess Robustness ---
+print("\n--- Robustness Assessment ---")
+if std_final_test_error < 0.005: # Threshold for "small" std dev (e.g., < 0.5% error difference)
+    print("The model appears to be reasonably robust to the choice of seed number.")
+    print("The standard deviation of the final test errors is small, indicating consistent performance across different initializations.")
+elif std_final_test_error < 0.01:
+    print("The model shows moderate sensitivity to the choice of seed number.")
+    print("There is some variation in performance, but it's not excessively large.")
 else:
-    print("\nNo misclassified images to show (or none were collected).")
-
-# Save the model checkpoint (optional, from original code)
-# torch.save(model.state_dict(), 'model.ckpt')
+    print("The model appears to be sensitive to the choice of seed number.")
+    print("The standard deviation of the final test errors is relatively large, indicating that results can vary noticeably with different initializations.")
+print("Note: A small number of epochs (5) might lead to higher variance as the model may not have fully converged.")
+print("Longer training could potentially reduce this variance.")# torch.save(model.state_dict(), 'model.ckpt')
